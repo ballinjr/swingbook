@@ -673,6 +673,7 @@ body { background:var(--bg); color:var(--text); font-family:'Syne',sans-serif; m
     <div class="page-header">
       <div class="page-title">Dashboard</div>
       <div class="page-actions">
+        <button class="header-btn" onclick="loadTrades().then(()=>{ loadChartJS(()=>{ refreshAll(); }); showToast('Synced from Google Sheets ✓'); })">↻ Sync Sheet</button>
         <button class="header-btn claude-btn" onclick="exportForClaude()">🤖 Share with Claude</button>
       </div>
     </div>
@@ -1074,7 +1075,10 @@ body { background:var(--bg); color:var(--text); font-family:'Syne',sans-serif; m
 
 <script>
 // ===== DATA =====
-const STORAGE_KEY = 'swingbook_trades_v2';
+// ===== GOOGLE SHEETS CONFIG =====
+const SHEET_ID = '1Kkoi9WGZkX9rmZJEnxeV3Uz9F6RIhB2uRXtbDOekPXQ';
+const SHEET_GID = '1311843972'; // Trade Log tab
+
 let trades = [];
 let editId = null;
 let closeId = null;
@@ -1083,10 +1087,57 @@ let analyticsRange = 'all';
 let calYear, calMonth;
 let donutInst = null, pnlChartInst = null, monthlyChartInst = null;
 
-function loadTrades() {
-  try { const d = localStorage.getItem(STORAGE_KEY); trades = d ? JSON.parse(d) : []; } catch(e) { trades = []; }
+function parseGvizDate(cell) {
+  if (!cell || cell.v === null || cell.v === undefined) return null;
+  if (typeof cell.v === 'string' && cell.v.startsWith('Date(')) {
+    const [y, m, d] = cell.v.slice(5, -1).split(',').map(Number);
+    return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+  return String(cell.v);
 }
-function saveTrades() { localStorage.setItem(STORAGE_KEY, JSON.stringify(trades)); }
+
+async function loadTrades() {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${SHEET_GID}`;
+  try {
+    const resp = await fetch(url);
+    const text = await resp.text();
+    const json = JSON.parse(text.replace(/^[^{]*/, '').replace(/[^}]*$/, ''));
+    const rows = json.table.rows;
+    trades = rows
+      .filter(r => r.c && r.c[2] && r.c[2].v)
+      .map((r, i) => {
+        const cell = (idx) => (r.c[idx] && r.c[idx].v !== null && r.c[idx].v !== undefined) ? r.c[idx] : null;
+        const val  = (idx) => cell(idx) ? cell(idx).v : null;
+        const direction = val(3);
+        const status    = val(16);
+        return {
+          id:         String(val(0) || i + 1),
+          entryDate:  parseGvizDate(cell(1)),
+          ticker:     String(val(2) || '').toUpperCase(),
+          direction:  direction === 'Bullish' ? 'BULL' : 'BEAR',
+          strategy:   String(val(4) || ''),
+          strike:     parseFloat(val(5)) || 0,
+          expDate:    parseGvizDate(cell(8)),
+          entryPrice: parseFloat(val(9)) || 0,
+          contracts:  parseInt(val(10)) || 1,
+          status:     (String(status || '')).toLowerCase() === 'open' ? 'open' : 'closed',
+          exitDate:   parseGvizDate(cell(12)),
+          exitPrice:  val(13) !== null ? parseFloat(val(13)) : null,
+          notes:      String(val(17) || ''),
+          exitNotes:  val(18) !== null ? String(val(18)) : null,
+          tp: null, sl: null
+        };
+      });
+  } catch(e) {
+    console.error('Google Sheets load failed:', e);
+    trades = [];
+    showToast('⚠ Could not load from Google Sheets — check sharing settings');
+  }
+}
+
+function saveTrades() {
+  // Trades are managed in Google Sheets — update your sheet directly
+}
 function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
 // ===== NAV =====
@@ -1726,8 +1777,9 @@ function loadChartJS(cb) {
 }
 
 // ===== INIT =====
-loadTrades();
-loadChartJS(() => { refreshAll(); });
+loadTrades().then(() => {
+  loadChartJS(() => { refreshAll(); });
+});
 document.querySelectorAll('.overlay').forEach(o => {
   o.addEventListener('click', e => { if(e.target===o) o.classList.remove('open'); });
 });
